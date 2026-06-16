@@ -93,6 +93,8 @@
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 #include <trace/events/rust_sample.h>
+#include <net/sch_generic.h>
+#include <net/pkt_sched.h>
 
 /*
  * The driver-core Rust code needs to know about some C driver-core private
