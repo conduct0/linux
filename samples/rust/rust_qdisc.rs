@@ -2,9 +2,12 @@
 
 //! Rust qdisc sample.
 
-use kernel::bindings::*;
+use core::marker::PhantomData;
+
+use kernel::bindings::{register_qdisc, sk_buff, Qdisc, Qdisc_ops};
 use kernel::ffi;
 use kernel::prelude::*;
+use kernel::types::Opaque;
 
 module! {
     type: QdiscSample,
@@ -13,6 +16,22 @@ module! {
     description: "Rust qdisc abstraction",
     license: "GPL",
     params:{},
+}
+
+#[repr(transparent)]
+pub struct QdiscR<T>(Opaque<Qdisc>, PhantomData<T>);
+impl<T> QdiscR<T> {
+    unsafe fn from_raw<'a>(ptr: *mut Qdisc) -> &'a mut Self {
+        // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::Qdisc`.
+        let ptr = ptr.cast::<Self>();
+        // SAFETY: by the function requirements the pointer is valid and we have unique access for
+        // the duration of `'a`.
+        unsafe { &mut *ptr }
+    }
+    pub fn get_qdisc_priv(&mut self) -> &mut T {
+        let qdisc = self.0.get();
+        return unsafe { &mut *(*qdisc).privdata.as_mut_ptr().cast::<T>() };
+    }
 }
 
 struct QdiscSample;
