@@ -72,18 +72,23 @@ pub trait QdiscOps {
     /// DOCS TODO
     const ID: &'static CStr;
 
+    /// DOCS TODO
     fn enqueue(
         qdisc: &mut Qdisc<Self::PrivData>,
         skb: *mut bindings::sk_buff,
         to_free: *mut *mut bindings::sk_buff,
     ) -> Result;
+    /// DOCS TODO
     fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
+    /// DOCS TODO
     fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
+    /// DOCS TODO
     fn init(
         qdisc: &mut Qdisc<Self::PrivData>,
         arg: *mut bindings::nlattr,
         extack: *mut bindings::netlink_ext_ack,
     ) -> ffi::c_int;
+    /// DOCS TODO
     fn destroy(qdisc: &mut Qdisc<Self::PrivData>);
 }
 
@@ -139,6 +144,7 @@ impl<T: QdiscOps> Adapter<T> {
         T::destroy(qdisc)
     }
 }
+/// TODO doc
 #[repr(transparent)]
 pub struct OperationsVTable(Opaque<bindings::Qdisc_ops>);
 
@@ -199,70 +205,50 @@ pub const fn create_qdisc_ops<T: QdiscOps>() -> OperationsVTable {
 
 // SAMPLE--->
 struct QdiscSample;
-//
-// static mut QDISC_OPS: bindings::Qdisc_ops = bindings::Qdisc_ops {
-//     next: core::ptr::null_mut(),
-//     cl_ops: core::ptr::null(),
-//     id: *b"rust_qdisc\0\0\0\0\0\0",
-//
-//     priv_size: 0,
-//     static_flags: 0,
-//     enqueue: Some(enqueue),
-//     dequeue: Some(dequeue),
-//     peek: Some(peek),
-//     init: None,
-//     reset: None,
-//     destroy: None,
-//     change: None,
-//     attach: None,
-//     change_tx_queue_len: None,
-//     change_real_num_tx: None,
-//     dump: None,
-//     dump_stats: None,
-//     ingress_block_set: None,
-//     egress_block_set: None,
-//     ingress_block_get: None,
-//     egress_block_get: None,
-//     owner: core::ptr::null_mut(),
-// };
-// unsafe extern "C" fn enqueue(
-//     skb: *mut bindings::sk_buff,
-//     _: *mut Qdisc,
-//     _: *mut *mut bindings::sk_buff,
-// ) -> ffi::c_int {
-//     unsafe {
-//         QUEUE[0] = skb;
-//         pr_info!("ENQUEUING");
-//     }
-//     return 0;
-// }
-//
-// unsafe extern "C" fn dequeue(_: *mut Qdisc) -> *mut bindings::sk_buff {
-//     pr_info!("DEQUEUE");
-//     unsafe {
-//         let skb = QUEUE[0];
-//         QUEUE[0] = core::ptr::null_mut();
-//         return skb;
-//     }
-// }
-// unsafe extern "C" fn peek(_: *mut Qdisc) -> *mut bindings::sk_buff {
-//     pr_info!("PEEK");
-//     unsafe {
-//         let skb = QUEUE[0];
-//         return skb;
-//     }
-// }
-//
-// static mut QUEUE: [*mut bindings::sk_buff; 2usize] = [core::ptr::null_mut(), core::ptr::null_mut()];
-//
+type SimpleList = [*mut bindings::sk_buff; 2usize];
+
 #[vtable]
-impl QdiscOps for QdiscSample {}
+impl QdiscOps for QdiscSample {
+    const ID: &'static CStr = c"rust_qdisc";
+    type PrivData = SimpleList;
+
+    fn enqueue(
+        qdisc: &mut Qdisc<Self::PrivData>,
+        skb: *mut bindings::sk_buff,
+        _to_free: *mut *mut bindings::sk_buff,
+    ) -> Result {
+        let priv_data = qdisc.get_qdisc_priv();
+        priv_data[0] = skb;
+        pr_info!("ENQUEUING");
+        return Ok(());
+    }
+    fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
+        let priv_data = qdisc.get_qdisc_priv();
+        let skb = priv_data[0];
+        pr_info!("ENQUEUING");
+        priv_data[0] = core::ptr::null_mut();
+        return skb;
+    }
+    fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
+        let priv_data = qdisc.get_qdisc_priv();
+        let skb = priv_data[0];
+        pr_info!("PEEK");
+        return skb;
+    }
+    fn init(
+        _qdisc: &mut Qdisc<Self::PrivData>,
+        _arg: *mut bindings::nlattr,
+        _extack: *mut bindings::netlink_ext_ack,
+    ) -> ffi::c_int {
+        return 0;
+    }
+    fn destroy(_qdisc: &mut Qdisc<Self::PrivData>) {}
+}
+
 impl ::kernel::Module for QdiscSample {
     fn init(_: &'static ::kernel::ThisModule) -> Result<Self> {
         let qdisc_ops = create_qdisc_ops::<QdiscSample>();
-        let res = kernel::error::to_result(unsafe {
-            bindings::register_qdisc(core::ptr::addr_of_mut!(qdisc_ops.0.get()))
-        });
+        let res = kernel::error::to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) });
         match res {
             Ok(_) => pr_info!("Success 123"),
             _ => pr_info!("Did not work 123"),
