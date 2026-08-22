@@ -9,15 +9,6 @@ use kernel::ffi;
 use kernel::prelude::*;
 use kernel::types::Opaque;
 
-module! {
-    type: QdiscSample,
-    name: "rust_qdisc",
-    authors: ["Rust for Linux Contributors"],
-    description: "Rust qdisc abstraction",
-    license: "GPL",
-    params:{},
-}
-
 /// An instance of a Qdisc.
 ///
 /// Wraps the kernel's [`struct Qdisc`].
@@ -202,9 +193,58 @@ pub const fn create_qdisc_ops<T: QdiscOps>() -> OperationsVTable {
         static_flags: 0,
     }))
 }
+/// Registration structure for Qdisc_ops
+///
+/// Registers [`OperationsVTable`] instances with the kernel. They will be unregistered when
+/// dropped.
+/// # Invariants
+///
+///
+pub struct Registration {
+    qdisc_ops: Pin<&'static mut OperationsVTable>,
+}
+
+// SAFETY: The only action allowed in a `Registration` instance is dropping it, which is safe to do
+// from any thread because `unregister_qdisc` can be called from any thread context.
+unsafe impl Send for Registration {}
+
+impl Registration {
+    /// Registers a QdiscOps.
+    pub fn register(
+        _module: &'static crate::ThisModule,
+        qdisc_ops: Pin<&'static mut OperationsVTable>,
+    ) -> Result<Self> {
+        let res = kernel::error::to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) });
+        match res {
+            Ok(_) => pr_info!("Success 123"),
+            _ => pr_info!("Did not work 123"),
+        }
+        Ok(Registration { qdisc_ops })
+    }
+}
+
+/// TODO
+impl Drop for Registration {
+    fn drop(&mut self) {
+        // SAFETY: The type invariants guarantee that `self.drivers` is valid.
+        // So it's just an FFI call.
+        unsafe { bindings::unregister_qdisc(self.qdisc_ops.0.get()) };
+    }
+}
 
 // SAMPLE--->
-struct QdiscSample;
+//
+struct QdiscSample {
+    _reg: Registration,
+}
+module! {
+    type: QdiscSample,
+    name: "rust_qdisc",
+    authors: ["Rust for Linux Contributors"],
+    description: "Rust qdisc abstraction",
+    license: "GPL",
+    params:{},
+}
 type SimpleList = [*mut bindings::sk_buff; 2usize];
 
 #[vtable]
@@ -245,20 +285,13 @@ impl QdiscOps for QdiscSample {
     fn destroy(_qdisc: &mut Qdisc<Self::PrivData>) {}
 }
 
-impl ::kernel::Module for QdiscSample {
-    fn init(_: &'static ::kernel::ThisModule) -> Result<Self> {
-        let qdisc_ops = create_qdisc_ops::<QdiscSample>();
-        let res = kernel::error::to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) });
-        match res {
-            Ok(_) => pr_info!("Success 123"),
-            _ => pr_info!("Did not work 123"),
+const _: () = {
+    static mut QDISC_OPS: QdiscOpsk = create_qdisc_ops::<QdiscSample>();
+    impl ::kernel::Module for QdiscSample {
+        fn init(module: &'static ::kernel::ThisModule) -> Result<Self> {
+            let qdisc = unsafe { &mut QDISC_OPS };
+            let mut reg = Registration::register(module, ::core::pin::Pin::static_mut(qdisc))?;
+            Ok(QdiscSample { _reg: reg })
         }
-        Ok(QdiscSample {})
     }
-}
-
-impl Drop for QdiscSample {
-    fn drop(&mut self) {
-        pr_info!("Rust Qdisc is working ");
-    }
-}
+};
