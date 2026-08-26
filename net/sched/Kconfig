@@ -43,6 +43,16 @@ menuconfig NET_SCHED
 
 if NET_SCHED
 
+comment "Rust"
+
+config RUST_QDISC_ABSTRACTIONS
+        bool "Rust Qdisc abstractions support"
+        depends on RUST
+        depends on NET_SCHED
+        help
+          Adds support needed for qdiscs written in Rust. It provides
+          a wrapper around the C qdisc core.
+
 comment "Queueing/Scheduling"
 
 config NET_SCH_HTB

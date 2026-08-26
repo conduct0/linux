@@ -33,11 +33,12 @@ config SAMPLE_RUST_MINIMAL
 
 config SAMPLE_RUST_QDISC
 	tristate "Qdisc"
+	depends on RUST_QDISC_ABSTRACTIONS
 	help
 	  This option builds the Rust qdisc module sample.
 
 	  To compile this as a module, choose M here:
-	  the module will be called rust_minimal.
+	  the module will be called rust_qdisc.
 
 	  If unsure, say N.
 
