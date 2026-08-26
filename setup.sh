@@ -13,7 +13,8 @@ tc qdisc show
 ip addr add 10.10.10.10/24 dev veth0
 ip netns exec ns1 ip addr add 10.10.10.20/24 dev veth1
 
+echo "Test it:"
 echo "ping 10.10.10.20 -I veth0"
-echo "  or from ns1: ip netns exec ns1 ping 10.10.10.10"
+echo "tc -s qdisc show dev veth0"
 
 

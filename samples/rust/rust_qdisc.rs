@@ -41,7 +41,7 @@ impl QdiscOps for QdiscSample {
         return qdisc.drop(skb, to_free);
     }
     fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
-        pr_info!("123 DE-EQUEUING");
+        pr_info!("123 DE-QUEUING");
         return qdisc.dequeue_head();
     }
     fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
