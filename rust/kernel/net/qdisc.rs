@@ -4,6 +4,31 @@
 
 use crate::{error::to_result, prelude::*, types::Opaque};
 use core::marker::PhantomData;
+/// A wrapper for the C [`struct sk_buff`].
+///
+/// [`struct sk_buff`]: srctree/include/linux/skbuff.h
+#[repr(transparent)]
+pub struct SkBuff(Opaque<bindings::sk_buff>);
+
+impl SkBuff {
+    /// Casts an [`struct sk_buff`] from a raw pointer into a reference
+    /// of the abstraction [`SkBuff`].
+    ///
+    /// # Safety
+    ///
+    /// For the duration of `'a`:
+    /// - The pointer must point at a valid `sk_buff`.
+    /// - The `sk_buff` must not be freed.
+    ///
+    /// [`struct sk_buff`]: srctree/include/linux/skbuff.h
+    unsafe fn from_raw<'a>(ptr: *mut bindings::sk_buff) -> &'a Self {
+        // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::sk_buff`.
+        let ptr = ptr.cast::<Self>();
+        // SAFETY: by the function requirements the pointer is valid and not freed
+        // for the duration of `'a`.
+        unsafe { &*ptr }
+    }
+}
 
 /// An instance of a Qdisc.
 ///
@@ -61,18 +86,23 @@ impl<P> Qdisc<P> {
         // For now will hardcode. should be init in the init func.
         unsafe { (*qdisc).limit }
     }
-    /// DOCS TODO
-    pub fn drop(&self, skb: *mut bindings::sk_buff, to_free: *mut *mut bindings::sk_buff) -> u32 {
+    /// Queue skb for future dropping helper.
+    /// It mutates Qdisc.
+    pub fn drop(
+        &mut self,
+        skb: *mut bindings::sk_buff,
+        to_free: *mut *mut bindings::sk_buff,
+    ) -> u32 {
         let qdisc = self.0.get();
         unsafe { return bindings::qdisc_drop(skb, qdisc, to_free) as u32 }
     }
     /// DOCS TODO
-    pub fn enqueue_tail(&self, skb: *mut bindings::sk_buff) -> u32 {
+    pub fn enqueue_tail(&mut self, skb: *mut bindings::sk_buff) -> u32 {
         let qdisc = self.0.get();
         unsafe { return bindings::qdisc_enqueue_tail(skb, qdisc) as u32 }
     }
     /// DOCS TODO
-    pub fn dequeue_head(&self) -> *mut bindings::sk_buff {
+    pub fn dequeue_head(&mut self) -> *mut bindings::sk_buff {
         let qdisc = self.0.get();
         unsafe { return bindings::qdisc_dequeue_head(qdisc) }
     }
@@ -82,7 +112,7 @@ impl<P> Qdisc<P> {
         unsafe { return bindings::qdisc_peek_head(qdisc) }
     }
     /// DOCS TODO
-    pub fn reset(&self) {
+    pub fn reset(&mut self) {
         let qdisc = self.0.get();
         unsafe { bindings::qdisc_reset_queue(qdisc) }
     }
@@ -233,10 +263,8 @@ impl Registration {
         unsafe { (*qdisc_ops.0.get()).owner = module.as_ptr() };
         let res = to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) });
         if res.is_ok() {
-            pr_info!("Success 123");
             Ok(Registration { qdisc_ops })
         } else {
-            pr_err!("DID NOT WORK123");
             return Err(res.err().unwrap());
         }
     }
