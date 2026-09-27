@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! Rust qdisc sample.
-
 use crate::{error::to_result, prelude::*, types::Opaque};
 use core::marker::PhantomData;
 /// A wrapper for the C [`struct sk_buff`].
@@ -11,7 +9,7 @@ use core::marker::PhantomData;
 pub struct SkBuff(Opaque<bindings::sk_buff>);
 
 impl SkBuff {
-    /// Casts an [`struct sk_buff`] from a raw pointer into a reference
+    /// Casts a [`struct sk_buff`] from a raw pointer into a reference
     /// of the abstraction [`SkBuff`].
     ///
     /// # Safety
@@ -34,110 +32,137 @@ impl SkBuff {
 ///
 /// Wraps the kernel's [`struct Qdisc`].
 ///
-/// A [`Qdisc`] instance is created when a callback in [`QdiscOps`] is executed. A Qdisc
-/// executes [`QdiscOps`]'s methods during the callback.
+/// A [`Qdisc`] reference is created when a callback in [`QdiscOps`] is executed.
 ///
 /// [`Qdisc`] accepts a generic type for the privdata field.
 ///
 /// # Invariants
-/// TODO check locking and no lock mode
-/// - Referencing a `Qdisc` using this struct asserts that you are in
+/// - While a [`Qdisc`] reference exists, the root lock is held; this means you are in
 ///   a context where all methods defined on this struct are safe to call.
-/// - This struct always has a valid `self.0.privdata`.
+/// - This struct always has an initialized `privdata` as `P`.(WIP)
 ///
 /// [`struct Qdisc`]: srctree/include/net/sch_generic.h
 #[repr(transparent)]
 pub struct Qdisc<P>(Opaque<bindings::Qdisc>, PhantomData<P>);
 
 impl<P> Qdisc<P> {
-    /// Creates a new [`Qdisc`] instance from a raw pointer.
+    /// Creates a new [`Qdisc`] reference from a raw pointer.
     ///
     /// # Safety
     ///
     /// For the duration of `'a`,
-    /// - the pointer must point at a valid `Qdisc`, and the caller
-    ///   must be in a context where all methods defined on this struct
-    ///   are safe to call.
-    /// - `(*ptr).privdata` must be valid.
+    /// - the pointer must point at a valid `struct Qdisc` and root lock of the Qdisc is held.
+    /// - `privdata` must be initialized as `P`.
     unsafe fn from_raw<'a>(ptr: *mut bindings::Qdisc) -> &'a mut Self {
         // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::Qdisc`.
         let ptr = ptr.cast::<Self>();
-        // SAFETY: by the function requirements the pointer is valid and we have unique access for
-        // the duration of `'a`.
+        // SAFETY: by safety requirements, the pointer is valid and the lock is held for the
+        // duration of `'a`, so the access is exclusive
         unsafe { &mut *ptr }
     }
-    /// Gets `Qdisc` privdata and casts with generic P
+    /// WIP this is not ready yet.
+    /// Gets `Qdisc` privdata and casts with generic P.
     pub fn get_qdisc_priv(&mut self) -> &mut P {
         let qdisc = self.0.get();
-        // SAFETY: privdata is allocated on the c side.
-        // Upon initialization privdata is filled with type P
+        // SAFETY: TODO
         unsafe { &mut *(*qdisc).privdata.as_mut_ptr().cast::<P>() }
     }
-    /// DOCS TODO
+    /// Gets the number of packets in the queue.
     pub fn qlen(&self) -> u32 {
         let qdisc = self.0.get();
-        // SAFETY: The struct invariant ensures that we may access
-        // this field without additional synchronization.
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // so it's safe to access this field.
         unsafe { (*qdisc).q.qlen }
     }
-    /// DOCS TODO
+    /// Gets the limit of the queue
     pub fn limit(&self) -> u32 {
         let qdisc = self.0.get();
-        // For now will hardcode. should be init in the init func.
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // so it's safe to access this field.
         unsafe { (*qdisc).limit }
     }
-    /// Queue skb for future dropping helper.
-    /// It mutates Qdisc.
-    pub fn drop(
+    /// Drops skb: adds skb to `to_free` and updates stats. Returns NET_XMIT_DROP.
+    pub fn drop_skb(
         &mut self,
         skb: *mut bindings::sk_buff,
         to_free: *mut *mut bindings::sk_buff,
     ) -> u32 {
         let qdisc = self.0.get();
-        unsafe { return bindings::qdisc_drop(skb, qdisc, to_free) as u32 }
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // changes made by helper to qdisc are safe.
+        unsafe { bindings::qdisc_drop(skb, qdisc, to_free) as u32 }
     }
-    /// DOCS TODO
+    /// Enqueues skb at the tail of the queue. Returns NET_XMIT_SUCCESS.
     pub fn enqueue_tail(&mut self, skb: *mut bindings::sk_buff) -> u32 {
         let qdisc = self.0.get();
-        unsafe { return bindings::qdisc_enqueue_tail(skb, qdisc) as u32 }
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // changes made by helper to qdisc are safe.
+        unsafe { bindings::qdisc_enqueue_tail(skb, qdisc) as u32 }
     }
-    /// DOCS TODO
+    /// Dequeues skb at the head of the queue.
     pub fn dequeue_head(&mut self) -> *mut bindings::sk_buff {
         let qdisc = self.0.get();
-        unsafe { return bindings::qdisc_dequeue_head(qdisc) }
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // changes made by helper to qdisc are safe.
+        unsafe { bindings::qdisc_dequeue_head(qdisc) }
     }
-    /// DOCS TODO
+    /// Returns a reference to the head of queue.
     pub fn peek_head(&self) -> *mut bindings::sk_buff {
         let qdisc = self.0.get();
-        unsafe { return bindings::qdisc_peek_head(qdisc) }
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // read is safe.
+        unsafe { bindings::qdisc_peek_head(qdisc) }
     }
-    /// DOCS TODO
+    /// Clears queue of qdisc.
     pub fn reset(&mut self) {
         let qdisc = self.0.get();
+        // SAFETY: The struct invariant ensures the root lock is held,
+        // changes made by helper to qdisc are safe.
         unsafe { bindings::qdisc_reset_queue(qdisc) }
     }
 }
 
-/// DOCS TODO
+/// Operations for a Qdisc type.
+///
+/// This trait is used to create an [`QdiscOpsVTable`] with [`create_qdisc_ops`].
+/// Note that all functions are called with the root lock being held by
+/// the networking core (e.g. [`__dev_xmit_skb`]).
+///
+/// [`__dev_xmit_skb`]: srctree/net/core/dev.c
 #[vtable]
 pub trait QdiscOps {
-    /// DOCS TODO
+    /// Type of per Qdisc instance `privdata`.
+    ///
+    /// Space is allocated by the C side and will be initialized on `init` of Qdisc.
     type PrivData;
 
-    /// DOCS TODO
+    /// ID of the qdisc used to register it, `tc` uses it to reference the qdisc.
+    ///
+    /// Size at most `IFNAMSIZ`, including NUL terminator, enforced at compile time.
     const ID: &'static CStr;
 
-    /// DOCS TODO
+    /// Called when an skb should be scheduled for transmission.
+    ///
+    /// Qdisc owns the skb, either it gets scheduled to be dropped (`to_free`)
+    /// or it is enqueued successfully.
+    /// `to_free` is a list of dropped packets that gets freed after the lock is released.
+    /// Returns `NET_XMIT_SUCCESS` or `NET_XMIT_DROP`.
     fn enqueue(
         qdisc: &mut Qdisc<Self::PrivData>,
         skb: *mut bindings::sk_buff,
         to_free: *mut *mut bindings::sk_buff,
     ) -> u32;
-    /// DOCS TODO
+
+    /// Called when the networking core wants the next packet to send to the driver.
+    ///
+    /// Ownership of the packet is returned to the networking core.
+    /// Returns packet in the queue, or null, if nothing should be sent now.
     fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
-    /// DOCS TODO
+
+    /// Returns the next packet without removing it from the queue or null if empty.
     fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
-    /// DOCS TODO
+
+    /// Frees all queued packets, resets `PrivData` state.
     fn reset(qdisc: &mut Qdisc<Self::PrivData>);
 }
 
@@ -152,6 +177,9 @@ impl<T: QdiscOps> Adapter<T> {
         sch: *mut bindings::Qdisc,
         to_free: *mut *mut bindings::sk_buff,
     ) -> c_int {
+        // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
+        // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
+        // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
         T::enqueue(qdisc, skb, to_free) as c_int
     }
@@ -160,6 +188,9 @@ impl<T: QdiscOps> Adapter<T> {
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
     unsafe extern "C" fn dequeue_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff {
+        // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
+        // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
+        // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
         T::dequeue(qdisc)
     }
@@ -168,20 +199,35 @@ impl<T: QdiscOps> Adapter<T> {
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
     unsafe extern "C" fn peek_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff {
+        // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
+        // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
+        // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
         T::peek(qdisc)
     }
+
     /// # Safety
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
     unsafe extern "C" fn reset_callback(sch: *mut bindings::Qdisc) {
+        // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
+        // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
+        // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
         T::reset(qdisc);
     }
 }
-/// TODO doc
+/// Wraps the kernel's [`struct Qdisc_ops`].
+///
+/// Created with [`create_qdisc_ops`] and registered by [`Registration::register`].
+///
+/// [`struct Qdisc_ops`]: srctree/include/net/sch_generic.h
 #[repr(transparent)]
-pub struct OperationsVTable(Opaque<bindings::Qdisc_ops>);
+pub struct QdiscOpsVTable(Opaque<bindings::Qdisc_ops>);
+
+// SAFETY: `QdiscOpsVTable` doesn't expose any &self method to access internal data, so it's safe
+// to share `&QdiscOpsVTable` across execution context boundaries.
+unsafe impl Sync for QdiscOpsVTable {}
 
 const IFNAMSIZ_USIZE: usize = bindings::IFNAMSIZ as usize;
 
@@ -197,23 +243,16 @@ const fn parse_id<T: QdiscOps>() -> [u8; IFNAMSIZ_USIZE] {
         parsed[i] = id_bytes[i];
         i += 1;
     }
-    return parsed;
+    parsed
 }
 
-// SAFETY: `DriverVTable` doesn't expose any &self method to access internal data, so it's safe to
-// share `&DriverVTable` across execution context boundaries.
-unsafe impl Sync for OperationsVTable {}
-
-/// Creates a [`DriverVTable`] instance from [`Driver`].
+/// Creates a [`QdiscOpsVTable`] instance from [`QdiscOps`].
 ///
-/// This is used by [`module_phy_driver`] macro to create a static array of `phy_driver`.
-///
-/// [`module_phy_driver`]: crate::module_phy_driver
-pub const fn create_qdisc_ops<T: QdiscOps>() -> OperationsVTable {
+/// Must be used to initialize a `static` so the `ID` length check runs at compile time.
+pub const fn create_qdisc_ops<T: QdiscOps>() -> QdiscOpsVTable {
     // INVARIANT: All the fields of `struct Qdisc_ops` are initialized properly.
-    OperationsVTable(Opaque::new(bindings::Qdisc_ops {
+    QdiscOpsVTable(Opaque::new(bindings::Qdisc_ops {
         id: parse_id::<T>(),
-        // TODO use  size_of::<T>()
         priv_size: size_of::<T::PrivData>() as i32,
         enqueue: Some(Adapter::<T>::enqueue_callback),
         dequeue: Some(Adapter::<T>::dequeue_callback),
@@ -234,18 +273,20 @@ pub const fn create_qdisc_ops<T: QdiscOps>() -> OperationsVTable {
         ingress_block_get: None,
         egress_block_get: None,
         owner: core::ptr::null_mut(),
+        // INVARIANT: `TCQ_F_NOLOCK` not set, networking core uses root lock of qdisc during
+        // callbacks. This upholds the invariant of qdisc.
         static_flags: 0,
     }))
 }
-/// Registration structure for Qdisc_ops
+/// Registration of a [`QdiscOpsVTable`] with the kernel.
 ///
-/// Registers [`OperationsVTable`] instances with the kernel. They will be unregistered when
-/// dropped.
+/// The qdisc is unregistered when this is dropped.
+///
 /// # Invariants
 ///
-///
+/// `qdisc_ops` is registered with the kernel.
 pub struct Registration {
-    qdisc_ops: Pin<&'static mut OperationsVTable>,
+    qdisc_ops: Pin<&'static mut QdiscOpsVTable>,
 }
 
 // SAFETY: The only action allowed in a `Registration` instance is dropping it, which is safe to do
@@ -256,25 +297,21 @@ impl Registration {
     /// Registers a QdiscOps.
     pub fn register(
         module: &'static ThisModule,
-        qdisc_ops: Pin<&'static mut OperationsVTable>,
+        qdisc_ops: Pin<&'static mut QdiscOpsVTable>,
     ) -> Result<Self> {
         // SAFETY: `qdisc_ops` is uniquely owned and has not been registered yet,
         // so nothing else can be accessing it.
         unsafe { (*qdisc_ops.0.get()).owner = module.as_ptr() };
-        let res = to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) });
-        if res.is_ok() {
-            Ok(Registration { qdisc_ops })
-        } else {
-            return Err(res.err().unwrap());
-        }
+        // SAFETY: `qdisc_ops` points at a valid, pinned `struct Qdisc_ops` with `'static` lifetime.
+        to_result(unsafe { bindings::register_qdisc(qdisc_ops.0.get()) })?;
+        // INVARIANT: `register_qdisc` succeeded, so `qdisc_ops` is registered.
+        Ok(Registration { qdisc_ops })
     }
 }
 
-/// TODO
 impl Drop for Registration {
     fn drop(&mut self) {
-        // SAFETY: The type invariants guarantee that `self.drivers` is valid.
-        // So it's just an FFI call.
+        // SAFETY: By the type invariant, `qdisc_ops` is registered, so it may be unregistered.
         unsafe { bindings::unregister_qdisc(self.qdisc_ops.0.get()) };
     }
 }

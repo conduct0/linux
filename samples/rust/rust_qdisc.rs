@@ -4,9 +4,9 @@
 
 use kernel::bindings;
 use kernel::net::qdisc::create_qdisc_ops;
-use kernel::net::qdisc::OperationsVTable;
 use kernel::net::qdisc::Qdisc;
 use kernel::net::qdisc::QdiscOps;
+use kernel::net::qdisc::QdiscOpsVTable;
 use kernel::net::qdisc::Registration;
 use kernel::prelude::*;
 
@@ -38,7 +38,7 @@ impl QdiscOps for QdiscSample {
             return qdisc.enqueue_tail(skb);
         }
 
-        return qdisc.drop(skb, to_free);
+        return qdisc.drop_skb(skb, to_free);
     }
     fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
         pr_info!("123 DE-QUEUING");
@@ -55,7 +55,7 @@ impl QdiscOps for QdiscSample {
 }
 
 const _: () = {
-    static mut QDISC_OPS: OperationsVTable = create_qdisc_ops::<QdiscSample>();
+    static mut QDISC_OPS: QdiscOpsVTable = create_qdisc_ops::<QdiscSample>();
     impl ::kernel::Module for QdiscSample {
         fn init(module: &'static ::kernel::ThisModule) -> Result<Self> {
             let qdisc = unsafe { &mut *(&raw mut QDISC_OPS) };
