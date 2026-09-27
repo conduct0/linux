@@ -2,9 +2,19 @@
 
 use crate::{error::to_result, prelude::*, types::Opaque};
 use core::marker::PhantomData;
+
 /// A wrapper for the C [`struct sk_buff`].
 ///
+/// # Invariants
+///
+/// All instances are valid skbs created by the C portion of the kernel.
+///
+/// Instances of this type are always refcounted, that is, a call to [`skb_get`] ensures
+/// that the allocation remains valid at least until the matching call to [`consume_skb`].
+///
 /// [`struct sk_buff`]: srctree/include/linux/skbuff.h
+/// [`skb_get`]: srctree/include/linux/skbuff.h
+/// [`consume_skb`]: srctree/include/linux/skbuff.h
 #[repr(transparent)]
 pub struct SkBuff(Opaque<bindings::sk_buff>);
 
@@ -19,6 +29,7 @@ impl SkBuff {
     /// - The `sk_buff` must not be freed.
     ///
     /// [`struct sk_buff`]: srctree/include/linux/skbuff.h
+    #[inline]
     unsafe fn from_raw<'a>(ptr: *mut bindings::sk_buff) -> &'a Self {
         // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::sk_buff`.
         let ptr = ptr.cast::<Self>();
@@ -26,7 +37,29 @@ impl SkBuff {
         // for the duration of `'a`.
         unsafe { &*ptr }
     }
+
+    /// Returns a raw pointer to the `struct sk_buff`.
+    #[inline]
+    pub fn as_raw(&self) -> *mut bindings::sk_buff {
+        self.0.get()
+    }
 }
+
+// SAFETY: The type invariants guarantee that `SkBuff` is always refcounted.
+unsafe impl crate::sync::aref::AlwaysRefCounted for SkBuff {
+    #[inline]
+    fn inc_ref(&self) {
+        // SAFETY: The existence of a shared reference means that the refcount is nonzero.
+        unsafe { bindings::skb_get(self.as_raw()) };
+    }
+
+    #[inline]
+    unsafe fn dec_ref(obj: core::ptr::NonNull<Self>) {
+        // SAFETY: The safety requirements guarantee that the refcount is nonzero.
+        unsafe { bindings::consume_skb(obj.cast().as_ptr()) }
+    }
+}
+// SAFETY: The type invariants guarantee that `SkBuff` is always refcounted.
 
 /// An instance of a Qdisc.
 ///

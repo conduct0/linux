@@ -88,6 +88,7 @@
 #include "scatterlist.c"
 #include "security.c"
 #include "signal.c"
+#include "skbuff.c"
 #include "slab.c"
 #include "spinlock.c"
 #include "string.c"
