@@ -8,7 +8,9 @@ use kernel::net::qdisc::Qdisc;
 use kernel::net::qdisc::QdiscOps;
 use kernel::net::qdisc::QdiscOpsVTable;
 use kernel::net::qdisc::Registration;
+use kernel::net::qdisc::SkBuff;
 use kernel::prelude::*;
+use kernel::sync::aref::ARef;
 
 struct QdiscSample {
     _reg: Registration,
@@ -25,11 +27,12 @@ module! {
 #[vtable]
 impl QdiscOps for QdiscSample {
     const ID: &'static CStr = c"rust_qdisc";
+
     type PrivData = ();
 
     fn enqueue(
         qdisc: &mut Qdisc<Self::PrivData>,
-        skb: *mut bindings::sk_buff,
+        skb: ARef<SkBuff>,
         to_free: *mut *mut bindings::sk_buff,
     ) -> u32 {
         pr_info!("123 ENQUEUING");
@@ -38,19 +41,22 @@ impl QdiscOps for QdiscSample {
             return qdisc.enqueue_tail(skb);
         }
 
-        return qdisc.drop_skb(skb, to_free);
+        qdisc.drop_skb(skb, to_free)
     }
-    fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
+
+    fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> Option<ARef<SkBuff>> {
         pr_info!("123 DE-QUEUING");
-        return qdisc.dequeue_head();
+        qdisc.dequeue_head()
     }
-    fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff {
+
+    fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> Option<&SkBuff> {
         pr_info!("123 PEEK");
-        return qdisc.peek_head();
+        qdisc.peek_head()
     }
+
     fn reset(qdisc: &mut Qdisc<Self::PrivData>) {
         pr_info!("123 RESET");
-        return qdisc.reset();
+        qdisc.reset();
     }
 }
 
@@ -58,8 +64,10 @@ const _: () = {
     static mut QDISC_OPS: QdiscOpsVTable = create_qdisc_ops::<QdiscSample>();
     impl ::kernel::Module for QdiscSample {
         fn init(module: &'static ::kernel::ThisModule) -> Result<Self> {
-            let qdisc = unsafe { &mut *(&raw mut QDISC_OPS) };
-            let reg = Registration::register(module, core::pin::Pin::static_mut(qdisc))?;
+            // SAFETY: `init` is called only once. `Registration` is the only one that owns the
+            // `qdisc_ops`.
+            let qdisc_ops = unsafe { &mut *(&raw mut QDISC_OPS) };
+            let reg = Registration::register(module, core::pin::Pin::static_mut(qdisc_ops))?;
             Ok(QdiscSample { _reg: reg })
         }
     }
