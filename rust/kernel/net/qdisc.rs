@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 
-use crate::{error::to_result, prelude::*, types::Opaque};
+//! Network Qdisc abstraction.
+//!
+//! C headers: [`include/net/sch_generic.h`](srctree/include/net/sch_generic.h)
+//!  [`include/linux/skbuff.h`](srctree/include/linux/skbuff.h)
+
+use crate::{error::to_result, prelude::*, sync::aref::ARef, types::Opaque};
 use core::marker::PhantomData;
 
 /// A wrapper for the C [`struct sk_buff`].
@@ -59,7 +64,6 @@ unsafe impl crate::sync::aref::AlwaysRefCounted for SkBuff {
         unsafe { bindings::consume_skb(obj.cast().as_ptr()) }
     }
 }
-// SAFETY: The type invariants guarantee that `SkBuff` is always refcounted.
 
 /// An instance of a Qdisc.
 ///
@@ -115,43 +119,59 @@ impl<P> Qdisc<P> {
         unsafe { (*qdisc).limit }
     }
     /// Drops skb: adds skb to `to_free` and updates stats. Returns NET_XMIT_DROP.
-    pub fn drop_skb(
-        &mut self,
-        skb: *mut bindings::sk_buff,
-        to_free: *mut *mut bindings::sk_buff,
-    ) -> u32 {
+    /// TODO: to_free should also be safely abstracted.
+    pub fn drop_skb(&mut self, skb: ARef<SkBuff>, to_free: *mut *mut bindings::sk_buff) -> u32 {
         let qdisc = self.0.get();
+        let raw_skb: *mut bindings::sk_buff = ARef::into_raw(skb).cast().as_ptr();
         // SAFETY: The struct invariant ensures the root lock is held,
-        // changes made by helper to qdisc are safe.
-        unsafe { bindings::qdisc_drop(skb, qdisc, to_free) as u32 }
+        // changes made by helper to qdisc are safe. `raw_skb` is valid by the `SkBuff` invariant.
+        // The reference to the skb is handed to `to_free`.
+        unsafe { bindings::qdisc_drop(raw_skb, qdisc, to_free) as u32 }
     }
     /// Enqueues skb at the tail of the queue. Returns NET_XMIT_SUCCESS.
-    pub fn enqueue_tail(&mut self, skb: *mut bindings::sk_buff) -> u32 {
+    pub fn enqueue_tail(&mut self, skb: ARef<SkBuff>) -> u32 {
         let qdisc = self.0.get();
+        let raw_skb: *mut bindings::sk_buff = ARef::into_raw(skb).cast().as_ptr();
         // SAFETY: The struct invariant ensures the root lock is held,
-        // changes made by helper to qdisc are safe.
-        unsafe { bindings::qdisc_enqueue_tail(skb, qdisc) as u32 }
+        // changes made by helper to qdisc are safe. `raw_skb` is valid by the `SkBuff` invariant.
+        // The reference to the skb is handed to the queue now.
+        unsafe { bindings::qdisc_enqueue_tail(raw_skb, qdisc) as u32 }
     }
     /// Dequeues skb at the head of the queue.
-    pub fn dequeue_head(&mut self) -> *mut bindings::sk_buff {
+    pub fn dequeue_head(&mut self) -> Option<ARef<SkBuff>> {
         let qdisc = self.0.get();
         // SAFETY: The struct invariant ensures the root lock is held,
         // changes made by helper to qdisc are safe.
-        unsafe { bindings::qdisc_dequeue_head(qdisc) }
+        let raw_skb = unsafe { bindings::qdisc_dequeue_head(qdisc) };
+        core::ptr::NonNull::new(raw_skb.cast::<SkBuff>()).map(|skb| 
+
+            // SAFETY: The reference was queued so we are sure the refcount was incremented at least
+            // by one before. Dequeuing transferred the reference to us, so the skb won't be used
+            // by the queue afterwards.
+            unsafe { ARef::from_raw(skb) })
     }
-    /// Returns a reference to the head of queue.
-    pub fn peek_head(&self) -> *mut bindings::sk_buff {
+
+    /// Returns a reference to the skb at the head of the queue, or `None` if it is empty.
+    pub fn peek_head(&self) -> Option<&SkBuff>{
         let qdisc = self.0.get();
         // SAFETY: The struct invariant ensures the root lock is held,
         // read is safe.
-        unsafe { bindings::qdisc_peek_head(qdisc) }
+        let raw_skb = unsafe { bindings::qdisc_peek_head(qdisc) };
+        core::ptr::NonNull::new(raw_skb).map(|skb|
+            // SAFETY: `skb` is non-null and valid: it is in the queue, and every skb in the queue
+            // got there through `enqueue_tail`, which handed the queue a refcounted reference.
+            // `dequeue_head` and `reset` need `&mut self`, so they cannot run while this
+            // reference, which borrows `&self`, exists.
+            unsafe { SkBuff::from_raw(skb.as_ptr()) })
+
     }
-    /// Clears queue of qdisc.
+
+    /// Frees queue of qdisc.
     pub fn reset(&mut self) {
         let qdisc = self.0.get();
         // SAFETY: The struct invariant ensures the root lock is held,
         // changes made by helper to qdisc are safe.
-        unsafe { bindings::qdisc_reset_queue(qdisc) }
+        unsafe { bindings::qdisc_reset_queue(qdisc) };
     }
 }
 
@@ -182,18 +202,18 @@ pub trait QdiscOps {
     /// Returns `NET_XMIT_SUCCESS` or `NET_XMIT_DROP`.
     fn enqueue(
         qdisc: &mut Qdisc<Self::PrivData>,
-        skb: *mut bindings::sk_buff,
+        skb: ARef<SkBuff>,
         to_free: *mut *mut bindings::sk_buff,
     ) -> u32;
 
     /// Called when the networking core wants the next packet to send to the driver.
     ///
     /// Ownership of the packet is returned to the networking core.
-    /// Returns packet in the queue, or null, if nothing should be sent now.
-    fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
+    /// Returns packet in the queue, or None, if nothing should be sent now.
+    fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> Option<ARef<SkBuff>>;
 
-    /// Returns the next packet without removing it from the queue or null if empty.
-    fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> *mut bindings::sk_buff;
+    /// Returns the next packet without removing it from the queue or None if empty.
+    fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> Option<&SkBuff>;
 
     /// Frees all queued packets, resets `PrivData` state.
     fn reset(qdisc: &mut Qdisc<Self::PrivData>);
@@ -214,29 +234,32 @@ impl<T: QdiscOps> Adapter<T> {
         // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
         // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
+        // SAFETY: The networking core never enqueues a null `skb`. It holds a reference to it,
+        // so the refcount is nonzero, and it transfers that reference to the qdisc on enqueue.
+        let skb = unsafe {ARef::from_raw(core::ptr::NonNull::new_unchecked(skb.cast()))};
         T::enqueue(qdisc, skb, to_free) as c_int
     }
 
     /// # Safety
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
-    unsafe extern "C" fn dequeue_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff {
+    unsafe extern "C" fn dequeue_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff{
         // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
         // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
         // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
-        T::dequeue(qdisc)
+        T::dequeue(qdisc).map_or(core::ptr::null_mut(), |skb| ARef::into_raw(skb).cast().as_ptr())
     }
 
     /// # Safety
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
-    unsafe extern "C" fn peek_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff {
+    unsafe extern "C" fn peek_callback(sch: *mut bindings::Qdisc) -> *mut bindings::sk_buff{
         // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
         // `static_flags` does not contain `TCQ_F_NOLOCK`, so the root lock is held during calls.
         // TODO: privdata is not init yet
         let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
-        T::peek(qdisc)
+        T::peek(qdisc).map_or(core::ptr::null_mut(), |skb| skb.as_raw())
     }
 
     /// # Safety
