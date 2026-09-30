@@ -5,7 +5,12 @@
 //! C headers: [`include/net/sch_generic.h`](srctree/include/net/sch_generic.h)
 //!  [`include/linux/skbuff.h`](srctree/include/linux/skbuff.h)
 
-use crate::{error::to_result, prelude::*, sync::aref::ARef, types::Opaque};
+use crate::{
+    error::{from_result, to_result, VTABLE_DEFAULT_ERROR},
+    prelude::*,
+    sync::aref::ARef,
+    types::Opaque,
+};
 use core::marker::PhantomData;
 
 /// A wrapper for the C [`struct sk_buff`].
@@ -74,8 +79,9 @@ unsafe impl crate::sync::aref::AlwaysRefCounted for SkBuff {
 /// [`Qdisc`] accepts a generic type for the privdata field.
 ///
 /// # Invariants
-/// - While a [`Qdisc`] reference exists, the root lock is held; this means you are in
-///   a context where all methods defined on this struct are safe to call.
+/// - While a [`Qdisc`] reference exists, access to the qdisc is exclusive: either the root
+///   lock is held, or the qdisc is not published yet (as in [`QdiscOps::init`]). This means
+///   you are in a context where all methods defined on this struct are safe to call.
 /// - This struct always has an initialized `privdata` as `P`.(WIP)
 ///
 /// [`struct Qdisc`]: srctree/include/net/sch_generic.h
@@ -88,13 +94,14 @@ impl<P> Qdisc<P> {
     /// # Safety
     ///
     /// For the duration of `'a`,
-    /// - the pointer must point at a valid `struct Qdisc` and root lock of the Qdisc is held.
+    /// - the pointer must point at a valid `struct Qdisc`, and access to it must be exclusive:
+    ///   either the root lock of the Qdisc is held, or the qdisc is not published yet.
     /// - `privdata` must be initialized as `P`.
     unsafe fn from_raw<'a>(ptr: *mut bindings::Qdisc) -> &'a mut Self {
         // CAST: `Self` is a `repr(transparent)` wrapper around `bindings::Qdisc`.
         let ptr = ptr.cast::<Self>();
-        // SAFETY: by safety requirements, the pointer is valid and the lock is held for the
-        // duration of `'a`, so the access is exclusive
+        // SAFETY: by safety requirements, the pointer is valid and access is exclusive for the
+        // duration of `'a`
         unsafe { &mut *ptr }
     }
     /// WIP this is not ready yet.
@@ -117,6 +124,13 @@ impl<P> Qdisc<P> {
         // SAFETY: The struct invariant ensures the root lock is held,
         // so it's safe to access this field.
         unsafe { (*qdisc).limit }
+    }
+    /// Sets the limit of the queue.
+    pub fn set_limit(&mut self, limit: u32) {
+        let qdisc = self.0.get();
+        // SAFETY: The struct invariant ensures access to the qdisc is exclusive,
+        // so it's safe to write this field.
+        unsafe { (*qdisc).limit = limit };
     }
     /// Drops skb: adds skb to `to_free` and updates stats. Returns NET_XMIT_DROP.
     /// TODO: to_free should also be safely abstracted.
@@ -194,6 +208,14 @@ pub trait QdiscOps {
     /// Size at most `IFNAMSIZ`, including NUL terminator, enforced at compile time.
     const ID: &'static CStr;
 
+    /// Called when the qdisc is created, before it is attached. Optional.
+    ///
+    /// Netlink options are not exposed yet, so configuration has to be hardcoded.
+    /// Returning an error aborts the creation of the qdisc.
+    fn init(_qdisc: &mut Qdisc<Self::PrivData>) -> Result {
+        build_error!(VTABLE_DEFAULT_ERROR)
+    }
+
     /// Called when an skb should be scheduled for transmission.
     ///
     /// Qdisc owns the skb, either it gets scheduled to be dropped (`to_free`)
@@ -222,6 +244,25 @@ pub trait QdiscOps {
 struct Adapter<T: QdiscOps>(PhantomData<T>);
 
 impl<T: QdiscOps> Adapter<T> {
+    /// # Safety
+    ///
+    /// `sch`, `arg` and `extack` must be passed by the corresponding callback in `Qdisc_ops`.
+    unsafe extern "C" fn init_callback(
+        sch: *mut bindings::Qdisc,
+        _arg: *mut bindings::nlattr,
+        _extack: *mut bindings::netlink_ext_ack,
+    ) -> c_int {
+        from_result(|| {
+            // SAFETY: By the safety requirement of this function, `sch` is valid `struct Qdisc`.
+            // The root lock is not held during `init`, but the qdisc is not published yet,
+            // so access is exclusive.
+            // TODO: privdata is not init yet
+            let qdisc = unsafe { Qdisc::<T::PrivData>::from_raw(sch) };
+            T::init(qdisc)?;
+            Ok(0)
+        })
+    }
+
     /// # Safety
     ///
     /// `sch` must be passed by the corresponding callback in `Qdisc_ops`.
@@ -315,7 +356,11 @@ pub const fn create_qdisc_ops<T: QdiscOps>() -> QdiscOpsVTable {
         peek: Some(Adapter::<T>::peek_callback),
         next: core::ptr::null_mut(),
         cl_ops: core::ptr::null(),
-        init: None,
+        init: if T::HAS_INIT {
+            Some(Adapter::<T>::init_callback)
+        } else {
+            None
+        },
         reset: Some(Adapter::<T>::reset_callback),
         destroy: None,
         change: None,

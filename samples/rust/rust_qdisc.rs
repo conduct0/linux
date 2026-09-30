@@ -30,14 +30,18 @@ impl QdiscOps for QdiscSample {
 
     type PrivData = ();
 
+    fn init(qdisc: &mut Qdisc<Self::PrivData>) -> Result {
+        pr_info!("123 INIT");
+        qdisc.set_limit(1000);
+        Ok(())
+    }
+
     fn enqueue(
         qdisc: &mut Qdisc<Self::PrivData>,
         skb: ARef<SkBuff>,
         to_free: *mut *mut bindings::sk_buff,
     ) -> u32 {
-        pr_info!("123 ENQUEUING");
-        const LIMIT: u32 = 1000;
-        if qdisc.qlen() < LIMIT {
+        if qdisc.qlen() < qdisc.limit() {
             return qdisc.enqueue_tail(skb);
         }
 
@@ -45,12 +49,10 @@ impl QdiscOps for QdiscSample {
     }
 
     fn dequeue(qdisc: &mut Qdisc<Self::PrivData>) -> Option<ARef<SkBuff>> {
-        pr_info!("123 DE-QUEUING");
         qdisc.dequeue_head()
     }
 
     fn peek(qdisc: &mut Qdisc<Self::PrivData>) -> Option<&SkBuff> {
-        pr_info!("123 PEEK");
         qdisc.peek_head()
     }
 
